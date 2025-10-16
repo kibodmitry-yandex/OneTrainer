@@ -66,4 +66,4 @@ if errorlevel 1 (
 )
 
 :end
-pause
+

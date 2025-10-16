@@ -55,6 +55,8 @@ class TrainingTab:
         self.prior_selected = None
 
         self.scroll_frame = None
+        # reference to the epochs entry widget (filled in when UI is created)
+        self.epochs_entry = None
 
         self.refresh_ui()
 
@@ -331,7 +333,21 @@ class TrainingTab:
         # epochs
         components.label(frame, 6, 0, "Epochs",
                          tooltip="The number of epochs for a full training run")
-        components.entry(frame, 6, 1, self.ui_state, "epochs")
+        # keep a reference to the entry so other UI code can focus it when needed
+        self.epochs_entry = components.entry(frame, 6, 1, self.ui_state, "epochs")
+
+    def focus_epochs_field(self):
+        """Set focus to the epochs entry and select the current text so the user can immediately edit it."""
+        try:
+            if self.epochs_entry and getattr(self.epochs_entry, 'winfo_exists', lambda: False)():
+                self.epochs_entry.focus()
+                try:
+                    # select all text if supported
+                    self.epochs_entry.select_range(0, 'end')
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         # batch size
         components.label(frame, 7, 0, "Local Batch Size",
@@ -415,6 +431,22 @@ class TrainingTab:
         components.label(frame, row, 0, "Autocast Cache",
                          tooltip="Enables the autocast cache. Disabling this reduces memory usage, but increases training time")
         components.switch(frame, row, 1, self.ui_state, "enable_autocast_cache")
+        row += 1
+
+        # GPU temperature control
+        components.label(frame, row, 0, "GPU Temp Control",
+                         tooltip="Enable automatic GPU temperature control (pause training when hot)")
+        components.switch(frame, row, 1, self.ui_state, "gpu_temp_control_enabled")
+        row += 1
+
+        components.label(frame, row, 0, "GPU Max Temp (C)",
+                         tooltip="Maximum GPU temperature to tolerate before pausing training")
+        components.entry(frame, row, 1, self.ui_state, "gpu_temp_max")
+        row += 1
+
+        components.label(frame, row, 0, "GPU Cool To (C)",
+                         tooltip="Temperature to wait for before resuming training")
+        components.entry(frame, row, 1, self.ui_state, "gpu_temp_cool_to")
         row += 1
 
         # resolution

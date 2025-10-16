@@ -43,6 +43,7 @@ from torchvision.transforms.functional import pil_to_tensor
 import huggingface_hub
 from requests.exceptions import ConnectionError
 from tqdm import tqdm
+from modules.util import resume_policy, gpu_temp_monitor
 
 
 class GenericTrainer(BaseTrainer):
@@ -95,6 +96,8 @@ class GenericTrainer(BaseTrainer):
 
         model_names = self.config.model_names()
 
+        # determine last backup path early for resume policy checks
+        last_backup_path = None
         if self.config.continue_last_backup:
             self.callbacks.on_update_status("searching for previous backups")
             last_backup_path = self.config.get_last_backup_path()
@@ -120,12 +123,56 @@ class GenericTrainer(BaseTrainer):
                 )
 
         self.callbacks.on_update_status("loading the model")
+        # If user requested to continue from a last backup, check the backup's meta.json
+        # before loading the model. If the backup already completed as many or more
+        # epochs than configured in `self.config.epochs`, do not load the model and
+        # exit early with a clear message to the user.
+        try:
+            if self.config.continue_last_backup and last_backup_path:
+                meta_path = os.path.join(last_backup_path, "meta.json")
+                if os.path.exists(meta_path):
+                    with open(meta_path, "r") as f:
+                        meta = json.load(f)
+                    saved_epoch = None
+                    try:
+                        saved_epoch = meta.get("train_progress", {}).get("epoch")
+                    except Exception:
+                        # malformed meta, ignore and proceed to load model
+                        saved_epoch = None
+
+                    if saved_epoch is not None and self.config.epochs <= saved_epoch:
+                        msg = (
+                            f"Not loading model from backup '{last_backup_path}': configured total epochs "
+                            f"({self.config.epochs}) <= already completed epochs in backup ({saved_epoch}). "
+                            "Increase 'epochs' to continue training or disable 'continue_last_backup'."
+                        )
+                        print(msg)
+                        try:
+                            self.callbacks.on_update_status(msg)
+                        except Exception:
+                            pass
+                        return
+        except Exception:
+            # Do not fail startup just because the pre-check failed; fall back to normal load.
+            traceback.print_exc()
+
         self.model = self.model_loader.load(
             model_type=self.config.model_type,
             model_names=model_names,
             weight_dtypes=self.config.weight_dtypes(),
         )
         self.model.train_config = self.config
+
+        # Apply resume policy: if dataset changed, reset progress and optimizer/ema
+        try:
+            if self.config.continue_last_backup and last_backup_path:
+                changes = resume_policy.dataset_changed(self.config, last_backup_path)
+                if any(changes.values()):
+                    # by default: reset counters and clear optimizer/ema and delete folders
+                    resume_policy.apply_reset_policy(self.model, last_backup_path, self.config, self.callbacks, self.config.workspace_dir, delete_physical=True)
+        except Exception:
+            # we must not fail startup because of the policy
+            traceback.print_exc()
 
         self.callbacks.on_update_status("running model setup")
 
@@ -808,6 +855,12 @@ class GenericTrainer(BaseTrainer):
                     self.__validate(train_progress)
 
                 train_progress.next_step(self.config.batch_size)
+                try:
+                    # check GPU temperature and pause if needed
+                    gpu_temp_monitor.pause_if_overtemp_if_needed(self.config, self.callbacks)
+                except Exception:
+                    # temperature monitoring must not break training
+                    pass
                 self.callbacks.on_update_train_progress(train_progress, current_epoch_length, self.config.epochs)
 
                 if self.commands.get_stop_command():

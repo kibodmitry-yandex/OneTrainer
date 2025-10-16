@@ -680,7 +680,60 @@ class TrainUI(ctk.CTk):
         self.set_eta_label(train_progress, max_step, max_epoch)
 
     def on_update_status(self, status: str):
-        self.status_label.configure(text=status)
+        # If resume check prevented loading because configured epochs <= saved epochs,
+        # show an explicit modal dialog to the user and focus the 'Epochs' field.
+        # If this status indicates the resume-check blocked training, schedule
+        # a modal dialog and focus change on the main thread (Tkinter must be
+        # accessed only from the UI thread). Always update the status_label on
+        # the UI thread as well.
+        try:
+            if isinstance(status, str) and status.startswith("Not loading model from backup"):
+                def show_and_focus():
+                    import tkinter.messagebox as mb
+
+                    human_message = (
+                        "Training was not started because the selected backup already completed the configured number of epochs.\n\n"
+                        "To continue training you can either:\n"
+                        "  • increase 'Epochs' in the Training tab, or\n"
+                        "  • disable 'continue_last_backup' in the advanced settings.\n\n"
+                        "Click OK to open the Training tab and edit the 'Epochs' value."
+                    )
+
+                    try:
+                        mb.showinfo("Resume blocked — epochs reached", human_message, parent=self)
+                    except Exception:
+                        print(status)
+
+                    # switch to training tab and focus the epochs entry
+                    try:
+                        with suppress(Exception):
+                            if self.tabview:
+                                self.tabview.set("training")
+                        with suppress(Exception):
+                            if hasattr(self, 'training_tab') and self.training_tab:
+                                self.training_tab.focus_epochs_field()
+                    except Exception:
+                        pass
+
+                # schedule on main thread
+                try:
+                    self.after(0, show_and_focus)
+                except Exception:
+                    # if scheduling fails, attempt to run directly (best-effort)
+                    show_and_focus()
+
+        except Exception:
+            pass
+
+        try:
+            # update status label on UI thread
+            try:
+                self.after(0, lambda: self.status_label.configure(text=status))
+            except Exception:
+                # fallback to direct update
+                self.status_label.configure(text=status)
+        except Exception:
+            pass
 
     def open_dataset_tool(self):
         window = CaptionUI(self, None, False)
@@ -752,6 +805,41 @@ class TrainUI(ctk.CTk):
         trainer = create.create_trainer(self.train_config, self.training_callbacks, self.training_commands, reattach=self.cloud_tab.reattach)
         try:
             trainer.start()
+
+            # If trainer.start() returned early (for example because the
+            # backup already completed the configured number of epochs), the
+            # trainer may not have loaded a model. In that case skip calling
+            # trainer.train() to avoid AttributeError when accessing
+            # trainer.model.train_progress. We still call trainer.end() and
+            # perform normal cleanup.
+            if getattr(trainer, "model", None) is None:
+                # propagate cloud secrets back to UI state if needed
+                if self.train_config.cloud.enabled:
+                    try:
+                        self.ui_state.get_var("secrets.cloud").update(self.train_config.secrets.cloud)
+                    except Exception:
+                        pass
+
+                # ensure any partial shutdown logic runs
+                try:
+                    trainer.end()
+                except Exception:
+                    traceback.print_exc()
+
+                # clear gpu memory
+                del trainer
+
+                self.training_thread = None
+                self.training_commands = None
+                torch.clear_autocast_cache()
+                torch_gc()
+
+                # no error; show final status and return
+                self.on_update_status("Stopped")
+                self.delete_eta_label()
+                self.after(0, self._set_training_button_idle)
+                return
+
             if self.train_config.cloud.enabled:
                 self.ui_state.get_var("secrets.cloud").update(self.train_config.secrets.cloud)
             self.start_time = time.monotonic()
