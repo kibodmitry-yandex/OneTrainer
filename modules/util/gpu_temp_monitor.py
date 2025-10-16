@@ -49,7 +49,7 @@ def pause_if_overtemp_if_needed(config, callbacks, logger_print=print):
 
     if any(t >= max_t for t in temps):
         callbacks.on_update_status(f"GPU temp exceeded {max_t}C, pausing training until <= {cool_to}C")
-        logger_print(f"GPU temp exceeded {max_t}C: {temps}")
+        logger_print(f"\nGPU temp exceeded {max_t}C, cool to {cool_to}C: {temps}\n")
 
         # block until cooled
         while True:

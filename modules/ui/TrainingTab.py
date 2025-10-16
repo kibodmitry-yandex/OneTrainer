@@ -335,20 +335,6 @@ class TrainingTab:
                          tooltip="The number of epochs for a full training run")
         # keep a reference to the entry so other UI code can focus it when needed
         self.epochs_entry = components.entry(frame, 6, 1, self.ui_state, "epochs")
-
-    def focus_epochs_field(self):
-        """Set focus to the epochs entry and select the current text so the user can immediately edit it."""
-        try:
-            if self.epochs_entry and getattr(self.epochs_entry, 'winfo_exists', lambda: False)():
-                self.epochs_entry.focus()
-                try:
-                    # select all text if supported
-                    self.epochs_entry.select_range(0, 'end')
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
         # batch size
         components.label(frame, 7, 0, "Local Batch Size",
                          tooltip="The batch size of one training step. If you use multiple GPUs, this is the batch size of each GPU (local batch size).")
@@ -369,6 +355,19 @@ class TrainingTab:
         components.label(frame, 10, 0, "Clip Grad Norm",
                          tooltip="Clips the gradient norm. Leave empty to disable gradient clipping.")
         components.entry(frame, 10, 1, self.ui_state, "clip_grad_norm")
+
+    def focus_epochs_field(self):
+        """Set focus to the epochs entry and select the current text so the user can immediately edit it."""
+        try:
+            if self.epochs_entry and getattr(self.epochs_entry, 'winfo_exists', lambda: False)():
+                self.epochs_entry.focus()
+                try:
+                    # select all text if supported
+                    self.epochs_entry.select_range(0, 'end')
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def __create_base2_frame(self, master, row, video_training_enabled: bool = False):
         frame = ctk.CTkFrame(master=master, corner_radius=5)
