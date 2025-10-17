@@ -576,11 +576,16 @@ class TrainUI(ctk.CTk):
         frame.grid_columnconfigure(2, minsize=50)
         frame.grid_columnconfigure(3, weight=0)
         frame.grid_columnconfigure(4, weight=1)
+        # Masking tool (new)
+        from modules.ui.MaskingTool import MaskingTool  # local import so module stays optional
+        components.label(frame, 0, 0, "Masking Tool",
+                         tooltip="Open the masking tool")
+        components.button(frame, 0, 1, "Open", self.open_masking_tool)
 
         # dataset
-        components.label(frame, 0, 0, "Dataset Tools",
+        components.label(frame, 1, 0, "Dataset Tools",
                          tooltip="Open the captioning tool")
-        components.button(frame, 0, 1, "Open", self.open_dataset_tool)
+        components.button(frame, 1, 1, "Open", self.open_dataset_tool)
 
         # video tools
         components.label(frame, 1, 0, "Video Tools",
@@ -603,6 +608,14 @@ class TrainUI(ctk.CTk):
 
         frame.pack(fill="both", expand=1)
         return frame
+
+    def open_masking_tool(self):
+        try:
+            from modules.ui.MaskingTool import MaskingTool
+            window = MaskingTool(self)
+            window.grab_set()
+        except Exception:
+            traceback.print_exc()
 
     def change_model_type(self, model_type: ModelType):
         if self.model_tab:
