@@ -94,6 +94,22 @@ class WuerstchenSampler(BaseModelSampler):
 
         self.model.prior_prior_to(self.train_device)
         for i, timestep in enumerate(tqdm(timesteps[:-1], desc="sampling")):
+            try:
+                from modules.util import gpu_temp_monitor
+                try:
+                    from modules.dataLoader.BaseDataLoader import _GLOBAL_TRAINER_CONFIG, _GLOBAL_TRAINER_CALLBACKS
+                    _cfg = _GLOBAL_TRAINER_CONFIG
+                    _cbs = _GLOBAL_TRAINER_CALLBACKS
+                except Exception:
+                    _cfg = None
+                    _cbs = None
+                try:
+                    gpu_temp_monitor.pause_if_overtemp_if_needed(_cfg, _cbs)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
             timestep = torch.stack([timestep]).to(dtype=self.model.prior_train_dtype.torch_dtype())
 
             latent_model_input = torch.cat([latent_image] * 2)
@@ -213,6 +229,22 @@ class WuerstchenSampler(BaseModelSampler):
 
         self.model.decoder_decoder_to(self.train_device)
         for i, timestep in enumerate(tqdm(timesteps[:-1], desc="sampling")):
+            try:
+                from modules.util import gpu_temp_monitor
+                try:
+                    from modules.dataLoader.BaseDataLoader import _GLOBAL_TRAINER_CONFIG, _GLOBAL_TRAINER_CALLBACKS
+                    _cfg = _GLOBAL_TRAINER_CONFIG
+                    _cbs = _GLOBAL_TRAINER_CALLBACKS
+                except Exception:
+                    _cfg = None
+                    _cbs = None
+                try:
+                    gpu_temp_monitor.pause_if_overtemp_if_needed(_cfg, _cbs)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
             timestep = torch.stack([timestep]).to(dtype=self.model.prior_train_dtype.torch_dtype())
 
             latent_model_input = latent_image

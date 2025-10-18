@@ -185,9 +185,79 @@ class GenericTrainer(BaseTrainer):
 
         self.callbacks.on_update_status("creating the data loader/caching")
 
+        # Ensure BaseDataLoader is imported so its runtime monkeypatches apply
+        # before mgds/DiskCache/SaveImage instances are created.
+        try:
+            import modules.dataLoader.BaseDataLoader  # noqa: F401
+        except Exception:
+            pass
+
+        try:
+            print(f"[GENERIC_TRAINER] creating data_loader config_id={id(self.config)} gpu_temp_control_enabled={getattr(self.config,'gpu_temp_control_enabled',None)}")
+        except Exception:
+            pass
+
         self.data_loader = self.create_data_loader(
             self.model, self.model.train_progress
         )
+        try:
+            # as a last resort, set global trainer config so patched worker hooks can fall back
+            try:
+                from modules.dataLoader.BaseDataLoader import _GLOBAL_TRAINER_CONFIG, _GLOBAL_TRAINER_CALLBACKS
+            except Exception:
+                _GLOBAL_TRAINER_CONFIG = None
+                _GLOBAL_TRAINER_CALLBACKS = None
+            try:
+                import modules.dataLoader.BaseDataLoader as _bd
+                _bd._GLOBAL_TRAINER_CONFIG = self.config
+                _bd._GLOBAL_TRAINER_CALLBACKS = self.callbacks
+                try:
+                    print(f"[GLOBAL_FALLBACK] set _GLOBAL_TRAINER_CONFIG id={id(self.config)}")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+        # Ensure any mgds DiskCache/SaveImage instances created inside the dataset
+        # are registered with our monitor map so worker hooks can find the trainer's config.
+        try:
+            from modules.dataLoader.BaseDataLoader import register_monitor_for_instance
+            try:
+                ds = None
+                try:
+                    ds = self.data_loader.get_data_set()
+                except Exception:
+                    ds = None
+                if ds is not None:
+                    lp = getattr(ds, 'loading_pipeline', None)
+                    mods = getattr(lp, 'modules', None) if lp is not None else None
+                    registered = 0
+                    if mods is not None:
+                        for m in mods:
+                            try:
+                                # import here to avoid hard dependency if mgds not installed
+                                from mgds.pipelineModules.DiskCache import DiskCache as _DiskCache
+                                from mgds.pipelineModules.SaveImage import SaveImage as _SaveImage
+                                if isinstance(m, (_DiskCache, _SaveImage)):
+                                    register_monitor_for_instance(m, self.config, self.callbacks)
+                                    registered += 1
+                            except Exception:
+                                # fallback: match by class name
+                                try:
+                                    if type(m).__name__ in ('DiskCache', 'SaveImage'):
+                                        register_monitor_for_instance(m, self.config, self.callbacks)
+                                        registered += 1
+                                except Exception:
+                                    pass
+                    try:
+                        print(f"[GLOBAL_REGISTER] registered monitor on {registered} pipeline modules (trainer config id={id(self.config)})")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception:
+            pass
         self.model_saver = self.create_model_saver()
 
         self.model_sampler = self.create_model_sampler(self.model)
@@ -297,6 +367,10 @@ class GenericTrainer(BaseTrainer):
                     sample_config = copy.copy(sample_config)
                     sample_config.from_train_config(self.config)
 
+                    try:
+                        gpu_temp_monitor.pause_if_overtemp_if_needed(self.config, self.callbacks)
+                    except Exception:
+                        pass
                     self.model_sampler.sample(
                         sample_config=sample_config,
                         destination=sample_path,
@@ -306,6 +380,7 @@ class GenericTrainer(BaseTrainer):
                         on_sample=on_sample,
                         on_update_progress=on_update_progress,
                     )
+
                 except Exception:
                     traceback.print_exc()
                     print("Error during sampling, proceeding without sampling")
@@ -655,6 +730,11 @@ class GenericTrainer(BaseTrainer):
             if multi.is_master():
                 self.callbacks.on_update_status("Caching")
                 for _epoch in tqdm(range(train_progress.epoch, self.config.epochs, 1), desc="epoch"):
+                    try:
+                        # ensure GPU temperatures are acceptable before cache-heavy step
+                        gpu_temp_monitor.pause_if_overtemp_if_needed(self.config, self.callbacks)
+                    except Exception:
+                        pass
                     self.data_loader.get_data_set().start_next_epoch()
             return
 
@@ -677,10 +757,18 @@ class GenericTrainer(BaseTrainer):
             #call start_next_epoch with only one process at first, because it might write to the cache. All subsequent processes can read in parallel:
             for _ in multi.master_first():
                 if self.config.latent_caching:
+                    try:
+                        gpu_temp_monitor.pause_if_overtemp_if_needed(self.config, self.callbacks)
+                    except Exception:
+                        pass
                     self.data_loader.get_data_set().start_next_epoch()
                     self.model_setup.setup_train_device(self.model, self.config)
                 else:
                     self.model_setup.setup_train_device(self.model, self.config)
+                    try:
+                        gpu_temp_monitor.pause_if_overtemp_if_needed(self.config, self.callbacks)
+                    except Exception:
+                        pass
                     self.data_loader.get_data_set().start_next_epoch()
 
             if self.config.debug_mode:

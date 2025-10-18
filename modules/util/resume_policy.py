@@ -23,27 +23,30 @@ def dataset_changed(cfg, backup_path: str) -> Dict[str, bool]:
     changes = {"concepts": False, "samples": False}
 
     try:
-        # concepts
+        # concepts: only treat as changed if both current and backup files exist and differ.
+        # If the backup does not contain the concepts file, be conservative and treat it as unchanged
+        # to avoid accidental optimizer/EMA resets when backup meta is incomplete.
         cur_concepts = os.path.abspath(cfg.concept_file_name)
         bak_concepts = os.path.join(backup_path, "onetrainer_config", "concepts.json")
-        if os.path.isfile(cur_concepts) and os.path.isfile(bak_concepts):
+        if os.path.isfile(bak_concepts) and os.path.isfile(cur_concepts):
             changes["concepts"] = sha256_of_file(cur_concepts) != sha256_of_file(bak_concepts)
         else:
-            changes["concepts"] = os.path.isfile(cur_concepts) != os.path.isfile(bak_concepts)
+            # do not assume a change when backup metadata is missing
+            changes["concepts"] = False
 
-        # samples
+        # samples: same conservative policy as for concepts
         cur_samples = os.path.abspath(cfg.sample_definition_file_name)
         bak_samples = os.path.join(backup_path, "onetrainer_config", "samples.json")
-        if os.path.isfile(cur_samples) and os.path.isfile(bak_samples):
+        if os.path.isfile(bak_samples) and os.path.isfile(cur_samples):
             changes["samples"] = sha256_of_file(cur_samples) != sha256_of_file(bak_samples)
         else:
-            changes["samples"] = os.path.isfile(cur_samples) != os.path.isfile(bak_samples)
+            changes["samples"] = False
 
     except Exception:
-        # в случае ошибок считаем, что изменение возможно
+        # on unexpected errors be conservative: do not trigger reset of optimizer/EMA
         try:
-            changes["concepts"] = True
-            changes["samples"] = True
+            changes["concepts"] = False
+            changes["samples"] = False
         except Exception:
             pass
 

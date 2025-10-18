@@ -117,6 +117,16 @@ class QwenSampler(BaseModelSampler):
             attention_mask_2d = attention_mask[:, None, None, :] * attention_mask[:, None, :, None]
 
             for i, timestep in enumerate(tqdm(timesteps, desc="sampling")):
+                # per-step GPU temperature check (validation sampling)
+                try:
+                    from modules.util import gpu_temp_monitor
+                    from modules.dataLoader import BaseDataLoader
+                    _cfg = getattr(BaseDataLoader, "_GLOBAL_TRAINER_CONFIG", None)
+                    _cbs = getattr(BaseDataLoader, "_GLOBAL_TRAINER_CALLBACKS", None)
+                    gpu_temp_monitor.pause_if_overtemp_if_needed(_cfg, _cbs)
+                except Exception:
+                    pass
+
                 latent_model_input = torch.cat([latent_image] * batch_size)
                 expanded_timestep = timestep.expand(batch_size)
                 noise_pred = transformer(

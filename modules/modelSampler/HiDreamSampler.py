@@ -111,6 +111,16 @@ class HiDreamSampler(BaseModelSampler):
 
             self.model.transformer_to(self.train_device)
             for i, timestep in enumerate(tqdm(timesteps, desc="sampling")):
+                # per-step GPU temperature check (validation sampling)
+                try:
+                    from modules.util import gpu_temp_monitor
+                    from modules.dataLoader import BaseDataLoader
+                    _cfg = getattr(BaseDataLoader, "_GLOBAL_TRAINER_CONFIG", None)
+                    _cbs = getattr(BaseDataLoader, "_GLOBAL_TRAINER_CALLBACKS", None)
+                    gpu_temp_monitor.pause_if_overtemp_if_needed(_cfg, _cbs)
+                except Exception:
+                    pass
+
                 latent_model_input = torch.cat([latent_image] * 2)
                 expanded_timestep = timestep.expand(latent_model_input.shape[0])
 

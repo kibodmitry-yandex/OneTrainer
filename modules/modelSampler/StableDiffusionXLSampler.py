@@ -144,6 +144,22 @@ class StableDiffusionXLSampler(BaseModelSampler):
             # denoising loop
             self.model.unet_to(self.train_device)
             for i, timestep in enumerate(tqdm(timesteps, desc="sampling")):
+                try:
+                    from modules.util import gpu_temp_monitor
+                    try:
+                        from modules.dataLoader.BaseDataLoader import _GLOBAL_TRAINER_CONFIG, _GLOBAL_TRAINER_CALLBACKS
+                        _cfg = _GLOBAL_TRAINER_CONFIG
+                        _cbs = _GLOBAL_TRAINER_CALLBACKS
+                    except Exception:
+                        _cfg = None
+                        _cbs = None
+                    try:
+                        gpu_temp_monitor.pause_if_overtemp_if_needed(_cfg, _cbs)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
                 latent_model_input = torch.cat([latent_image] * 2)
                 latent_model_input = noise_scheduler.scale_model_input(latent_model_input, timestep)
 

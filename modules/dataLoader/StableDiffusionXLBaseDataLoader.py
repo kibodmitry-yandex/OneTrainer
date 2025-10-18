@@ -49,13 +49,17 @@ class StableDiffusionXLBaseDataLoader(
             config.batch_size = 1
             config.multi_gpu = False
 
+        # keep config and callbacks on the instance so wrappers and modules can access them
+        self.config = config
+        self.callbacks = getattr(config, 'callbacks', None)
+
         self.__ds = self.create_dataset(
             config=config,
             model=model,
             train_progress=train_progress,
             is_validation=is_validation,
         )
-        self.__dl = TrainDataLoader(self.__ds, config.batch_size)
+        self.__dl = self.wrap_train_dataloader(TrainDataLoader(self.__ds, config.batch_size))
 
     def get_data_set(self) -> MGDS:
         return self.__ds
@@ -132,12 +136,22 @@ class StableDiffusionXLBaseDataLoader(
         text_cache_dir = os.path.join(config.cache_dir, "text")
 
         def before_cache_image_fun():
+            try:
+                from modules.util import gpu_temp_monitor
+                gpu_temp_monitor.pause_if_overtemp_if_needed(self.config, self.callbacks)
+            except Exception:
+                pass
             model.to(self.temp_device)
             model.vae_to(self.train_device)
             model.eval()
             torch_gc()
 
         def before_cache_text_fun():
+            try:
+                from modules.util import gpu_temp_monitor
+                gpu_temp_monitor.pause_if_overtemp_if_needed(self.config, self.callbacks)
+            except Exception:
+                pass
             model.to(self.temp_device)
 
             if not config.train_text_encoder_or_embedding():
@@ -150,12 +164,43 @@ class StableDiffusionXLBaseDataLoader(
             torch_gc()
 
         image_disk_cache = DiskCache(cache_dir=image_cache_dir, split_names=image_split_names, aggregate_names=image_aggregate_names, variations_in_name='concept.image_variations', balancing_in_name='concept.balancing', balancing_strategy_in_name='concept.balancing_strategy', variations_group_in_name=['concept.path', 'concept.seed', 'concept.include_subdirectories', 'concept.image'], group_enabled_in_name='concept.enabled', before_cache_fun=before_cache_image_fun)
+        try:
+            from modules.dataLoader.BaseDataLoader import register_monitor_for_instance, get_monitor_for_instance
+            register_monitor_for_instance(image_disk_cache, self.config, getattr(self, 'callbacks', None))
+            try:
+                cfg_preview, _ = get_monitor_for_instance(image_disk_cache)
+                print(f"[SET_MONITOR] image_disk_cache registered monitor id={id(cfg_preview) if cfg_preview is not None else None} gpu_temp_control_enabled={getattr(cfg_preview,'gpu_temp_control_enabled',None)}")
+            except Exception:
+                pass
+        except Exception:
+            pass
 
         text_disk_cache = DiskCache(cache_dir=text_cache_dir, split_names=text_split_names, aggregate_names=[], variations_in_name='concept.text_variations', balancing_in_name='concept.balancing', balancing_strategy_in_name='concept.balancing_strategy', variations_group_in_name=['concept.path', 'concept.seed', 'concept.include_subdirectories', 'concept.text'], group_enabled_in_name='concept.enabled', before_cache_fun=before_cache_text_fun)
+        try:
+            from modules.dataLoader.BaseDataLoader import register_monitor_for_instance, get_monitor_for_instance
+            register_monitor_for_instance(text_disk_cache, self.config, getattr(self, 'callbacks', None))
+            try:
+                cfg_preview, _ = get_monitor_for_instance(text_disk_cache)
+                print(f"[SET_MONITOR] text_disk_cache registered monitor id={id(cfg_preview) if cfg_preview is not None else None} gpu_temp_control_enabled={getattr(cfg_preview,'gpu_temp_control_enabled',None)}")
+            except Exception:
+                pass
+        except Exception:
+            pass
 
         modules = []
 
         if config.latent_caching:
+            # per-item temperature check to avoid overheating during caching
+            def _temp_check_prompt(prompt):
+                try:
+                    from modules.util import gpu_temp_monitor
+                    gpu_temp_monitor.pause_if_overtemp_if_needed(self.config, self.callbacks)
+                except Exception:
+                    pass
+                return prompt
+
+            temp_check_module = MapData(in_name='prompt_1', out_name='prompt_1', map_fn=_temp_check_prompt)
+            modules.append(temp_check_module)
             modules.append(image_disk_cache)
 
         if config.latent_caching:
@@ -213,6 +258,11 @@ class StableDiffusionXLBaseDataLoader(
         debug_dir = os.path.join(config.debug_dir, "dataloader")
 
         def before_save_fun():
+            try:
+                from modules.util import gpu_temp_monitor
+                gpu_temp_monitor.pause_if_overtemp_if_needed(self.config, self.callbacks)
+            except Exception:
+                pass
             model.vae_to(self.train_device)
 
         decode_image = DecodeVAE(in_name='latent_image', out_name='decoded_image', vae=model.vae, autocast_contexts=[model.autocast_context, model.vae_autocast_context], dtype=model.vae_train_dtype.torch_dtype())
@@ -220,9 +270,39 @@ class StableDiffusionXLBaseDataLoader(
         upscale_mask = ScaleImage(in_name='latent_mask', out_name='decoded_mask', factor=8)
         decode_prompt = DecodeTokens(in_name='tokens_1', out_name='decoded_prompt', tokenizer=model.tokenizer_1)
         save_image = SaveImage(image_in_name='decoded_image', original_path_in_name='image_path', path=debug_dir, in_range_min=-1, in_range_max=1, before_save_fun=before_save_fun)
+        try:
+            from modules.dataLoader.BaseDataLoader import register_monitor_for_instance, get_monitor_for_instance
+            register_monitor_for_instance(save_image, self.config, getattr(self, 'callbacks', None))
+            try:
+                cfg_preview, _ = get_monitor_for_instance(save_image)
+                print(f"[SET_MONITOR] save_image registered monitor id={id(cfg_preview) if cfg_preview is not None else None} gpu_temp_control_enabled={getattr(cfg_preview,'gpu_temp_control_enabled',None)}")
+            except Exception:
+                pass
+        except Exception:
+            pass
         save_conditioning_image = SaveImage(image_in_name='decoded_conditioning_image', original_path_in_name='image_path', path=debug_dir, in_range_min=-1, in_range_max=1, before_save_fun=before_save_fun)
+        try:
+            from modules.dataLoader.BaseDataLoader import register_monitor_for_instance, get_monitor_for_instance
+            register_monitor_for_instance(save_conditioning_image, self.config, getattr(self, 'callbacks', None))
+            try:
+                cfg_preview, _ = get_monitor_for_instance(save_conditioning_image)
+                print(f"[SET_MONITOR] save_conditioning_image registered monitor id={id(cfg_preview) if cfg_preview is not None else None} gpu_temp_control_enabled={getattr(cfg_preview,'gpu_temp_control_enabled',None)}")
+            except Exception:
+                pass
+        except Exception:
+            pass
         # SaveImage(image_in_name='latent_mask', original_path_in_name='image_path', path=debug_dir, in_range_min=0, in_range_max=1, before_save_fun=before_save_fun)
         save_mask = SaveImage(image_in_name='decoded_mask', original_path_in_name='image_path', path=debug_dir, in_range_min=0, in_range_max=1, before_save_fun=before_save_fun)
+        try:
+            from modules.dataLoader.BaseDataLoader import register_monitor_for_instance, get_monitor_for_instance
+            register_monitor_for_instance(save_mask, self.config, getattr(self, 'callbacks', None))
+            try:
+                cfg_preview, _ = get_monitor_for_instance(save_mask)
+                print(f"[SET_MONITOR] save_mask registered monitor id={id(cfg_preview) if cfg_preview is not None else None} gpu_temp_control_enabled={getattr(cfg_preview,'gpu_temp_control_enabled',None)}")
+            except Exception:
+                pass
+        except Exception:
+            pass
         save_prompt = SaveText(text_in_name='decoded_prompt', original_path_in_name='image_path', path=debug_dir, before_save_fun=before_save_fun)
 
         # These modules don't really work, since they are inserted after a sorting operation that does not include this data

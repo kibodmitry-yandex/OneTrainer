@@ -58,13 +58,17 @@ class StableDiffusionFineTuneVaeDataLoader(BaseDataLoader):
             config.batch_size = 1
             config.multi_gpu = False
 
+        # keep config and callbacks on the instance so wrappers and modules can access them
+        self.config = config
+        self.callbacks = getattr(config, 'callbacks', None)
+
         self.__ds = self.create_dataset(
             config=config,
             model=model,
             train_progress=train_progress,
             is_validation=is_validation,
         )
-        self.__dl = TrainDataLoader(self.__ds, config.batch_size)
+        self.__dl = self.wrap_train_dataloader(TrainDataLoader(self.__ds, config.batch_size))
 
     def get_data_set(self) -> MGDS:
         return self.__ds
@@ -220,9 +224,24 @@ class StableDiffusionFineTuneVaeDataLoader(BaseDataLoader):
         sort_names = ['concept']
 
         def before_cache_fun():
+            try:
+                from modules.util import gpu_temp_monitor
+                gpu_temp_monitor.pause_if_overtemp_if_needed(self.config, self.callbacks)
+            except Exception:
+                pass
             self._setup_cache_device(model, self.train_device, self.temp_device, config)
 
         disk_cache = DiskCache(cache_dir=config.cache_dir, split_names=split_names, aggregate_names=aggregate_names, variations_in_name='concept.image_variations', balancing_in_name='concept.balancing', balancing_strategy_in_name='concept.balancing_strategy', variations_group_in_name=['concept.path', 'concept.seed', 'concept.include_subdirectories', 'concept.image'], group_enabled_in_name='concept.enabled', before_cache_fun=before_cache_fun)
+        try:
+            from modules.dataLoader.BaseDataLoader import register_monitor_for_instance, get_monitor_for_instance
+            register_monitor_for_instance(disk_cache, self.config, getattr(self, 'callbacks', None))
+            try:
+                cfg_preview, _ = get_monitor_for_instance(disk_cache)
+                print(f"[SET_MONITOR] disk_cache registered monitor id={id(cfg_preview) if cfg_preview is not None else None} gpu_temp_control_enabled={getattr(cfg_preview,'gpu_temp_control_enabled',None)}")
+            except Exception:
+                pass
+        except Exception:
+            pass
         variation_sorting = VariationSorting(names=sort_names, balancing_in_name='concept.balancing', balancing_strategy_in_name='concept.balancing_strategy', variations_group_in_name=['concept.path', 'concept.seed', 'concept.include_subdirectories', 'concept.text'], group_enabled_in_name='concept.enabled')
 
         modules = []
