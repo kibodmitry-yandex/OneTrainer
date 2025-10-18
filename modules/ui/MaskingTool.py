@@ -13,18 +13,28 @@ from customtkinter import CTkImage
 
 import customtkinter as ctk
 
+import logging
+logging.basicConfig(filename='debug_ui.log', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # When this module is executed directly (python modules/ui/MaskingTool.py)
 # the package imports like `modules.*` may fail because the repository root
 # isn't on sys.path. Detect that and add the repo root (two parents up) so
 # imports resolve the same as when running the app from project root.
 try:
     from modules.util.ui import components
+    from modules.module.Translator import Translator
+    from modules.module.TextTokenz import TextTokenCounter
+    from transformers import CLIPTokenizer
 except ModuleNotFoundError:
     import sys
     repo_root = Path(__file__).resolve().parents[2]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
     from modules.util.ui import components
+    from modules.module.Translator import Translator
+    from modules.module.TextTokenz import TextTokenCounter
+    from transformers import CLIPTokenizer
 
 
 class ToolTip:
@@ -81,6 +91,8 @@ class MaskingTool(ctk.CTkToplevel):
         self._last_selected_file: str | None = None
         # for debounced atomic settings save
         self._settings_save_after_id = None
+        self._info_save_after_id = None
+        self._info_geometry = {}
         # input holders for dataset folder UI (may be entry or clickable link)
         self.folder_entry = None
         self.folder_link = None
@@ -467,6 +479,48 @@ class MaskingTool(ctk.CTkToplevel):
             except Exception:
                 pass
 
+    def _schedule_save_info_settings(self, delay_ms: int = 500):
+        try:
+            if self._info_save_after_id is not None:
+                try:
+                    self.after_cancel(self._info_save_after_id)
+                except Exception:
+                    pass
+            self._info_save_after_id = self.after(delay_ms, self._save_info_geometry)
+        except Exception:
+            pass
+
+    def _save_info_geometry(self):
+        try:
+            if not hasattr(self, '_info_window') or not self._info_window:
+                return
+            win = self._info_window
+            try:
+                win.update_idletasks()
+            except Exception:
+                pass
+            try:
+                x = int(win.winfo_x())
+                y = int(win.winfo_y())
+                w = int(win.winfo_width())
+                h = int(win.winfo_height())
+            except Exception:
+                return
+            # enforce minima
+            w = max(400, w)
+            h = max(220, h)
+            screen_w = win.winfo_screenwidth()
+            screen_h = win.winfo_screenheight()
+            w = min(w, screen_w)
+            h = min(h, screen_h)
+            x = max(0, min(x, screen_w - 50))
+            y = max(0, min(y, screen_h - 50))
+            self._info_geometry = {'x': x, 'y': y, 'w': w, 'h': h}
+            # schedule main save
+            self._schedule_save_settings()
+        except Exception:
+            pass
+
     def _load_window_settings(self):
         import json
         p = self._settings_path()
@@ -550,6 +604,7 @@ class MaskingTool(ctk.CTkToplevel):
                 self.eraser_softness = float(meta.get('eraser_softness', 0.5))
                 self.panel_x = int(meta.get('panel_x', 100))
                 self.panel_y = int(meta.get('panel_y', 100))
+                self._info_geometry = meta.get('info_geometry', {})
             except Exception:
                 pass
             if dataset_dir:
@@ -684,6 +739,11 @@ class MaskingTool(ctk.CTkToplevel):
                     meta_block['eraser_softness'] = self.eraser_softness
                     meta_block['panel_x'] = self.panel_x
                     meta_block['panel_y'] = self.panel_y
+                    # Update info_geometry with force_cpu
+                    info_geom = getattr(self, '_info_geometry', {})
+                    if hasattr(self, 'force_cpu_var'):
+                        info_geom['force_cpu'] = self.force_cpu_var.get()
+                    meta_block['info_geometry'] = info_geom
                 except Exception:
                     pass
                 if meta_block:
@@ -913,6 +973,8 @@ class MaskingTool(ctk.CTkToplevel):
                             self._update_mask_preview(self.originals[idx])
                         except Exception:
                             pass
+                        if self.active_tool == 'info':
+                            self._open_info_editor()
                     except Exception:
                         # fallback to first
                         self.originals_list.selection_set(0)
@@ -921,6 +983,8 @@ class MaskingTool(ctk.CTkToplevel):
                             self._update_mask_preview(self.originals[0])
                         except Exception:
                             pass
+                        if self.active_tool == 'info':
+                            self._open_info_editor()
                 else:
                     # default to first and persist that choice
                     self.originals_list.selection_set(0)
@@ -929,6 +993,8 @@ class MaskingTool(ctk.CTkToplevel):
                         self._update_mask_preview(self.originals[0])
                     except Exception:
                         pass
+                    if self.active_tool == 'info':
+                        self._open_info_editor()
                     try:
                         self._last_selected_file = self.originals[0]
                         # save immediately so it persists across crashes
@@ -970,6 +1036,8 @@ class MaskingTool(ctk.CTkToplevel):
                 self._update_mask_preview(path)
             except Exception:
                 pass
+            if self.active_tool == 'info':
+                self._open_info_editor()
 
             # persist this selection immediately
             try:
@@ -1497,6 +1565,7 @@ class MaskingTool(ctk.CTkToplevel):
             'brush',
             'eraser',
             'spline',
+            'info',
             'undo',
             'redo',
             'invert_mask',
@@ -1504,14 +1573,15 @@ class MaskingTool(ctk.CTkToplevel):
         ]
         for tool in tools:
             tooltips = {
-                'zoom': 'Zoom In/Out',
-                'brush': 'Brush Tool',
-                'eraser': 'Eraser Tool',
-                'spline': 'Spline Tool',
-                'undo': 'Undo',
-                'redo': 'Redo',
-                'invert_mask': 'Invert Mask',
-                'delete_mask': 'Delete Mask'
+                'zoom': 'Zoom In/Out (-, +, 0)',
+                'brush': 'Brush Tool (B)',
+                'eraser': 'Eraser Tool (L)',
+                'spline': 'Spline Tool (S)',
+                'info': 'Info (edit sidecar text) (I)',
+                'undo': 'Undo (U)',
+                'redo': 'Redo (R)',
+                'invert_mask': 'Invert Mask (V)',
+                'delete_mask': 'Delete Mask (D)'
             }
             if tool == 'zoom':
                 btn = ctk.CTkButton(buttons_frame, width=40, height=40, text="", image=self.tool_icons[tool])
@@ -1525,6 +1595,9 @@ class MaskingTool(ctk.CTkToplevel):
                 btn = ctk.CTkButton(buttons_frame, width=40, height=40, text="", image=self.tool_icons[tool], command=self._invert_mask)
             elif tool == 'delete_mask':
                 btn = ctk.CTkButton(buttons_frame, width=40, height=40, text="", image=self.tool_icons[tool], command=self._delete_mask)
+            elif tool == 'info':
+                # use same activation model as other tools; opening/closing window handled in _set_active_tool
+                btn = ctk.CTkButton(buttons_frame, width=40, height=40, text="", image=self.tool_icons.get('info'), command=lambda t='info': self._set_active_tool(t))
             else:
                 btn = ctk.CTkButton(buttons_frame, width=40, height=40, text="", image=self.tool_icons[tool], command=lambda t=tool: self._set_active_tool(t))
             btn.pack(pady=2)
@@ -1584,6 +1657,14 @@ class MaskingTool(ctk.CTkToplevel):
         except Exception:
             pass
         self.tool_icons['invert_mask'] = CTkImage(img, size=(icon_size, icon_size))
+        # add info icon (letter i)
+        img = Image.new('RGBA', (icon_size, icon_size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        # dot
+        draw.ellipse((10, 3, 14, 7), fill='white')
+        # stem
+        draw.rectangle((11, 8, 13, 18), fill='white')
+        self.tool_icons['info'] = CTkImage(img, size=(icon_size, icon_size))
 
     def _on_zoom_click(self, event):
         width = event.widget.winfo_width() // 2
@@ -1692,6 +1773,351 @@ class MaskingTool(ctk.CTkToplevel):
             except Exception:
                 mtime = None
             self._cached_overlay_params = (mask_path, mtime, size, self.mask_style)
+        except Exception:
+            pass
+
+    # --- Info (sidecar) editor helpers ---
+    def _get_sidecar_path_for_original(self, orig_path: str) -> Path | None:
+        try:
+            if not orig_path:
+                return None
+            p = Path(orig_path)
+            return p.with_suffix('.txt')
+        except Exception:
+            return None
+
+    def _ensure_sidecar_exists(self, orig_path: str) -> Path | None:
+        try:
+            side = self._get_sidecar_path_for_original(orig_path)
+            if side is None:
+                return None
+            if not side.exists():
+                # create empty sidecar
+                try:
+                    side.write_text('', encoding='utf-8')
+                except Exception:
+                    # fallback safe create via open
+                    try:
+                        with open(side, 'w', encoding='utf-8') as f:
+                            f.write('')
+                    except Exception:
+                        return None
+            return side
+        except Exception:
+            return None
+
+    def _save_sidecar_atomic(self, side_path: Path, text: str):
+        try:
+            fd, tmp = tempfile.mkstemp(prefix=side_path.name, dir=str(side_path.parent))
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    f.write(text)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                os.replace(tmp, str(side_path))
+            finally:
+                try:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                except Exception:
+                    pass
+        except Exception:
+            try:
+                side_path.write_text(text, encoding='utf-8')
+            except Exception:
+                pass
+
+    def _open_info_editor(self):
+        logger.info("Opening info editor")
+        # open a persistent Toplevel with a Text widget bound to the selected original's sidecar
+        try:
+            sel = self.originals_list.curselection()
+            if not sel:
+                return
+            idx = sel[0]
+            orig_path = self.originals[idx]
+            side = self._ensure_sidecar_exists(orig_path)
+            if side is None:
+                return
+
+            # if already open for same path, just focus
+            if getattr(self, '_info_window', None) is not None:
+                try:
+                    if getattr(self, '_info_window_orig', None) == orig_path:
+                        try:
+                            self._info_window.deiconify()
+                            self._info_text.focus_set()
+                        except Exception:
+                            pass
+                        return
+                    else:
+                        self._close_info_editor()
+                except Exception:
+                    pass
+
+            win = tk.Toplevel(self)
+            win.title(f"Info: {Path(orig_path).name}")
+            win.geometry('560x340')
+            # apply saved geometry if available
+            try:
+                geom = getattr(self, '_info_geometry', {})
+                if geom:
+                    x = int(geom.get('x', 0))
+                    y = int(geom.get('y', 0))
+                    w = int(geom.get('w', 560))
+                    h = int(geom.get('h', 320))
+                    # enforce minimums
+                    w = max(w, 400)
+                    h = max(h, 220)
+                    # clamp to screen
+                    screen_w = win.winfo_screenwidth()
+                    screen_h = win.winfo_screenheight()
+                    w = min(w, screen_w)
+                    h = min(h, screen_h)
+                    x = max(0, min(x, screen_w - 50))
+                    y = max(0, min(y, screen_h - 50))
+                    win.geometry(f"{w}x{h}+{x}+{y}")
+            except Exception:
+                pass
+            win.transient(self)
+            # add header frame for buttons
+            header_frame = tk.Frame(win, height=20)
+            header_frame.pack(side='top', fill='x')
+            # translator button
+            self.translator_btn = tk.Button(header_frame, text="T", width=2, height=1, command=self._translate_selected_text)
+            self.translator_btn.pack(side='left')
+            # Force CPU checkbox
+            self.force_cpu_var = tk.BooleanVar()
+            self.force_cpu_var.set(self._info_geometry.get('force_cpu', False))
+            self.force_cpu_check = tk.Checkbutton(header_frame, text="CPU", variable=self.force_cpu_var, command=self._on_force_cpu_change)
+            self.force_cpu_check.pack(side='left')
+            # Token counter
+            try:
+                logger.info("Loading CLIP tokenizer for token count...")
+                from transformers import AutoTokenizer
+                tokenizer = AutoTokenizer.from_pretrained('openai/clip-vit-base-patch32')
+                logger.info(f"Tokenizer loaded: {tokenizer}")
+                self.token_counter = TextTokenCounter(tokenizer)
+                self.token_label = tk.Label(header_frame, text="Tokens: 0", font=("Arial", 8))
+                self.token_label.pack(side='left', padx=5)
+                logger.info("Token counter created successfully.")
+            except Exception as e:
+                import tkinter.messagebox as messagebox
+                messagebox.showerror("Error", f"Cannot load tokenizer for token count: {e}")
+                logger.error(f"Cannot load tokenizer for token count: {e}")
+                self.token_counter = None
+            win.bind('<Configure>', lambda e: self._schedule_save_info_settings())
+            text = tk.Text(win, wrap='word', undo=True)
+            text.pack(fill='both', expand=True)
+            self._info_text = text
+            if self.token_counter:
+                text.bind("<KeyRelease>", lambda e: self._schedule_token_update())
+                # Initial update
+                self._update_token_count()
+            # load content
+            try:
+                content = side.read_text(encoding='utf-8')
+            except Exception:
+                try:
+                    with open(side, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                except Exception:
+                    content = ''
+            try:
+                text.delete('1.0', 'end')
+                text.insert('1.0', content)
+            except Exception:
+                pass
+            # Update token count after loading content
+            if self.token_counter:
+                self._update_token_count()
+
+            # context menu with copy/paste
+            menu = tk.Menu(win, tearoff=0)
+            menu.add_command(label='Cut', command=lambda: text.event_generate('<<Cut>>'))
+            menu.add_command(label='Copy', command=lambda: text.event_generate('<<Copy>>'))
+            menu.add_command(label='Paste', command=lambda: text.event_generate('<<Paste>>'))
+            def show_menu(e):
+                try:
+                    menu.tk_popup(e.x_root, e.y_root)
+                finally:
+                    menu.grab_release()
+            text.bind('<Button-3>', show_menu)
+
+            # bind Ctrl/Cmd-C/V/X to allow copy/paste
+            text.bind('<Control-c>', lambda e: text.event_generate('<<Copy>>'))
+            text.bind('<Control-x>', lambda e: text.event_generate('<<Cut>>'))
+            text.bind('<Control-v>', lambda e: text.event_generate('<<Paste>>'))
+
+            # auto-save on modification with debounce
+            save_after_id = {'id': None}
+            def schedule_save(_event=None):
+                try:
+                    if save_after_id['id'] is not None:
+                        try:
+                            win.after_cancel(save_after_id['id'])
+                        except Exception:
+                            pass
+                    save_after_id['id'] = win.after(400, do_save)
+                except Exception:
+                    pass
+
+            def do_save():
+                try:
+                    txt = text.get('1.0', 'end').rstrip('\n')
+                    self._save_sidecar_atomic(side, txt)
+                except Exception:
+                    pass
+
+            text.bind('<<Modified>>', lambda e: (text.edit_modified(False), schedule_save(e)))
+
+            # close handler
+            def on_close():
+                try:
+                    # final save
+                    do_save()
+                except Exception:
+                    pass
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+                try:
+                    self._info_window = None
+                    self._info_window_orig = None
+                    self._info_text = None
+                    self._info_save_after_id = None
+                    # if active tool still 'info', unset to avoid blocking
+                    if getattr(self, 'active_tool', None) == 'info':
+                        self.active_tool = None
+                        # refresh toolbar visuals
+                        for t, btn in self.tool_buttons.items():
+                            try:
+                                btn.configure(fg_color=['gray70', 'gray30'])
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+            win.protocol('WM_DELETE_WINDOW', on_close)
+            self._info_window = win
+            self._info_window_orig = orig_path
+            self._info_text = text
+            # focus the text widget
+            try:
+                text.focus_set()
+            except Exception:
+                pass
+            # bind Ctrl+Up/Down for image navigation
+            text.bind('<Control-Up>', lambda e: self._select_prev_image())
+            text.bind('<Control-Down>', lambda e: self._select_next_image())
+            # block drawing hotkeys by ensuring focus is in text (existing _on_key_press checks focus_get)
+        except Exception:
+            pass
+
+    def _close_info_editor(self):
+        try:
+            if getattr(self, '_info_window', None) is not None:
+                try:
+                    self._info_window.destroy()
+                except Exception:
+                    pass
+            self._info_window = None
+            self._info_window_orig = None
+            self._info_text = None
+            self._info_save_after_id = None
+        except Exception:
+            pass
+
+    def _on_force_cpu_change(self):
+        self._info_geometry['force_cpu'] = self.force_cpu_var.get()
+        self._schedule_save_info_settings()
+
+    def _schedule_token_update(self):
+        if hasattr(self, '_token_after_id'):
+            self.after_cancel(self._token_after_id)
+        self._token_after_id = self.after(300, self._update_token_count)  # 300ms debounce
+
+    def _update_token_count(self):
+        logger.info("Updating token count...")
+        if not self.token_counter or not hasattr(self, '_info_text'):
+            logger.info("Token counter or text not available.")
+            return
+        text = self._info_text.get("1.0", "end-1c")
+        tokens = self.token_counter.count_tokens(text)
+        logger.info(f"Debug: Text length {len(text)}, tokens: {tokens}")
+        self.token_label.config(text=f"Tokens: {tokens}")
+
+    def _translate_selected_text(self):
+        try:
+            if not hasattr(self, '_info_text') or self._info_text is None:
+                return
+            sel_ranges = self._info_text.tag_ranges("sel")
+            if not sel_ranges:
+                return
+            start, end = sel_ranges[:2]
+            selected_text = self._info_text.get(start, end).strip()
+            if not selected_text:
+                return
+            # Disable button and show loading
+            self.translator_btn.config(text="...", state="disabled")
+            # Note: Do not disable text input to allow programmatic inserts
+            # Insert newline after selection
+            self._info_text.insert(end, "\n")
+            insert_pos = self._info_text.index(str(end) + "+1c")  # Position after the newline
+            # Start translation in thread
+            t = threading.Thread(target=self._run_translation, args=(selected_text, insert_pos, self.force_cpu_var.get()))
+            t.daemon = True
+            t.start()
+        except Exception as e:
+            print(f"Error starting translation: {e}")
+
+    def _run_translation(self, text, insert_pos, force_cpu):
+        try:
+            print(f"Starting translation for text: {repr(text)}, force_cpu: {force_cpu}")
+            translator = Translator(force_cpu=force_cpu)
+            self.current_insert_pos = insert_pos
+            def stream_callback(new_text):
+                print(f"Inserting: {repr(new_text)} at {self.current_insert_pos}")
+                self.after(0, self._do_insert, new_text)
+            translated = translator.translate(text, stream_callback=stream_callback)
+            # After completion, re-enable button
+            self.translator_btn.config(text="T", state="normal")
+        except Exception as e:
+            print(f"Translation error: {e}")
+            self.translator_btn.config(text="T", state="normal")
+
+    def _do_insert(self, new_text):
+        self._info_text.insert(self.current_insert_pos, new_text)
+        self.current_insert_pos = self._info_text.index(self.current_insert_pos + f"+{len(new_text)}c")
+        self._info_text.see("end")
+
+    def _select_prev_image(self):
+        try:
+            sel = self.originals_list.curselection()
+            if sel:
+                idx = sel[0] - 1
+                if idx >= 0:
+                    self.originals_list.selection_clear(0, 'end')
+                    self.originals_list.selection_set(idx)
+                    self.originals_list.see(idx)
+                    self._on_list_select()
+        except Exception:
+            pass
+
+    def _select_next_image(self):
+        try:
+            sel = self.originals_list.curselection()
+            if sel:
+                idx = sel[0] + 1
+                if idx < len(self.originals):
+                    self.originals_list.selection_clear(0, 'end')
+                    self.originals_list.selection_set(idx)
+                    self.originals_list.see(idx)
+                    self._on_list_select()
         except Exception:
             pass
 
@@ -2870,6 +3296,9 @@ class MaskingTool(ctk.CTkToplevel):
             pass
 
     def _on_key_press(self, event):
+        # If Info tool is active, block drawing hotkeys (editing happens in separate window)
+        if getattr(self, 'active_tool', None) == 'info':
+            return
         # ignore hotkeys if focus is on a text input widget
         focused = self.focus_get()
         if focused and isinstance(focused, (tk.Entry, tk.Text, ctk.CTkEntry)):
@@ -2900,6 +3329,23 @@ class MaskingTool(ctk.CTkToplevel):
             if self.originals_list.curselection():
                 self.pan_offset_y += step
                 self._update_current_preview()
+        # tool hotkeys (using keycode for layout-independent hotkeys)
+        elif event.keycode == 66:  # B
+            self._set_active_tool('brush')
+        elif event.keycode == 76:  # L
+            self._set_active_tool('eraser')
+        elif event.keycode == 83:  # S
+            self._set_active_tool('spline')
+        elif event.keycode == 73:  # I
+            self._set_active_tool('info')
+        elif event.keycode == 85:  # U
+            self._undo()
+        elif event.keycode == 82:  # R
+            self._redo()
+        elif event.keycode == 86:  # V
+            self._invert_mask()
+        elif event.keycode == 68:  # D
+            self._delete_mask()
         # spline keyboard controls
         if self.active_tool == 'spline':
             try:
@@ -3390,6 +3836,7 @@ class MaskingTool(ctk.CTkToplevel):
                 pass
 
     def _set_active_tool(self, tool, save=True):
+        prev = getattr(self, 'active_tool', None)
         self.active_tool = tool
         for t, btn in self.tool_buttons.items():
             if t == tool:
@@ -3402,6 +3849,24 @@ class MaskingTool(ctk.CTkToplevel):
             self._hide_sliders()
         if save:
             self._save_window_settings_atomic()
+        # special handling for info tool: open/close editor and block drawing hotkeys while active
+        try:
+            if tool == 'info':
+                # open editor window for current selection
+                try:
+                    self._open_info_editor()
+                except Exception:
+                    pass
+            else:
+                # if previous was info, close editor
+                try:
+                    if prev == 'info':
+                        self._close_info_editor()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
 
     def _show_sliders(self):
         if self.size_slider is None:
