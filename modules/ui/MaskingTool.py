@@ -937,10 +937,11 @@ class MaskingTool(ctk.CTkToplevel):
 
         # update UI on main thread and print summary table to log
         try:
-            self.after(0, lambda: (self._update_lists(), self._log_database_summary()))
+            # self.after(0, lambda: (self._update_lists(), self._log_database_summary()))
+            self.after(0, lambda: (self._update_lists()))
         except Exception:
+            # self._log_database_summary()
             self._update_lists()
-            self._log_database_summary()
 
     def _log_database_summary(self):
         # print a simple table: Original | Mask | Text
@@ -1836,6 +1837,16 @@ class MaskingTool(ctk.CTkToplevel):
                 pass
 
     def _open_info_editor(self):
+        # Гарантируем, что выделение и фокус в списке файлов остаются
+        sel = self.originals_list.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        self.originals_list.selection_clear(0, 'end')
+        self.originals_list.selection_set(idx)
+        self.originals_list.activate(idx)
+        self.originals_list.see(idx)
+        self.originals_list.focus_set()
         logger.info("Opening info editor")
         # open a persistent Toplevel with a Text widget bound to the selected original's sidecar
         try:
@@ -1894,9 +1905,10 @@ class MaskingTool(ctk.CTkToplevel):
             # translator button
             self.translator_btn = tk.Button(header_frame, text="T", width=2, height=1, command=self._translate_selected_text)
             self.translator_btn.pack(side='left')
-            # Force CPU checkbox
-            self.force_cpu_var = tk.BooleanVar()
-            self.force_cpu_var.set(self._info_geometry.get('force_cpu', False))
+            # Force CPU checkbox: не сбрасывать состояние между открытиями Info
+            if not hasattr(self, 'force_cpu_var') or self.force_cpu_var is None:
+                self.force_cpu_var = tk.BooleanVar()
+                self.force_cpu_var.set(self._info_geometry.get('force_cpu', False))
             self.force_cpu_check = tk.Checkbutton(header_frame, text="CPU", variable=self.force_cpu_var, command=self._on_force_cpu_change)
             self.force_cpu_check.pack(side='left')
             # Token counter
@@ -1906,8 +1918,14 @@ class MaskingTool(ctk.CTkToplevel):
                 tokenizer = AutoTokenizer.from_pretrained('openai/clip-vit-base-patch32')
                 logger.info(f"Tokenizer loaded: {tokenizer}")
                 self.token_counter = TextTokenCounter(tokenizer)
-                self.token_label = tk.Label(header_frame, text="Tokens: 0", font=("Arial", 8))
-                self.token_label.pack(side='left', padx=5)
+                # Token display: separate static label and dynamic count label so we can
+                # style the count independently and attach a tooltip.
+                self.token_label = tk.Label(header_frame, text="Tokens:", font=("Arial", 8))
+                self.token_label.pack(side='left', padx=(5, 0))
+                self.token_count_label = tk.Label(header_frame, text="0", font=("Arial", 8, 'bold'))
+                self.token_count_label.pack(side='left', padx=(2, 5))
+                # Tooltip for token count will be created/updated dynamically
+                self._token_tooltip = None
                 logger.info("Token counter created successfully.")
             except Exception as e:
                 import tkinter.messagebox as messagebox
@@ -1918,6 +1936,43 @@ class MaskingTool(ctk.CTkToplevel):
             text = tk.Text(win, wrap='word', undo=True)
             text.pack(fill='both', expand=True)
             self._info_text = text
+            def _info_keypress(event):
+                state = getattr(event, 'state', 0)
+                ctrl = (state & 0x4) != 0
+                if ctrl:
+                    ks = getattr(event, 'keysym', '').lower()
+                    if ks in ('c',):
+                        text.event_generate('<<Copy>>')
+                        return 'break'
+                    elif ks in ('x',):
+                        text.event_generate('<<Cut>>')
+                        return 'break'
+                    elif ks in ('v',):
+                        text.event_generate('<<Paste>>')
+                        return 'break'
+                    ch = getattr(event, 'char', '')
+                    if ch:
+                        try:
+                            code = ord(ch)
+                            if code == 3:
+                                text.event_generate('<<Copy>>')
+                                return 'break'
+                            elif code == 24:
+                                text.event_generate('<<Cut>>')
+                                return 'break'
+                            elif code == 22:
+                                text.event_generate('<<Paste>>')
+                                return 'break'
+                        except Exception:
+                            pass
+                if getattr(event, 'keysym', '').lower() == 'insert':
+                    if (state & 0x1) != 0:
+                        text.event_generate('<<Paste>>')
+                        return 'break'
+                    if (state & 0x4) != 0:
+                        text.event_generate('<<Copy>>')
+                        return 'break'
+            text.bind('<KeyPress>', _info_keypress)
             if self.token_counter:
                 text.bind("<KeyRelease>", lambda e: self._schedule_token_update())
                 # Initial update
@@ -1952,10 +2007,16 @@ class MaskingTool(ctk.CTkToplevel):
                     menu.grab_release()
             text.bind('<Button-3>', show_menu)
 
-            # bind Ctrl/Cmd-C/V/X to allow copy/paste
-            text.bind('<Control-c>', lambda e: text.event_generate('<<Copy>>'))
-            text.bind('<Control-x>', lambda e: text.event_generate('<<Cut>>'))
-            text.bind('<Control-v>', lambda e: text.event_generate('<<Paste>>'))
+            # bind Ctrl/Cmd-C/V/X to allow copy/paste with logging and to prevent global interception
+            # Bind common variants; widget-level binds run before 'all' and returning 'break' prevents global handler
+            text.bind('<Control-c>', lambda e: text.event_generate('<<Copy>>') or 'break')
+            text.bind('<Control-Key-c>', lambda e: text.event_generate('<<Copy>>') or 'break')
+            text.bind('<Control-x>', lambda e: text.event_generate('<<Cut>>') or 'break')
+            text.bind('<Control-Key-x>', lambda e: text.event_generate('<<Cut>>') or 'break')
+            text.bind('<Control-v>', lambda e: text.event_generate('<<Paste>>') or 'break')
+            text.bind('<Control-Key-v>', lambda e: text.event_generate('<<Paste>>') or 'break')
+            text.bind('<Control-Insert>', lambda e: text.event_generate('<<Copy>>') or 'break')
+            text.bind('<Shift-Insert>', lambda e: text.event_generate('<<Paste>>') or 'break')
 
             # auto-save on modification with debounce
             save_after_id = {'id': None}
@@ -1977,7 +2038,22 @@ class MaskingTool(ctk.CTkToplevel):
                 except Exception:
                     pass
 
-            text.bind('<<Modified>>', lambda e: (text.edit_modified(False), schedule_save(e)))
+            def _on_text_modified(e=None):
+                try:
+                    text.edit_modified(False)
+                except Exception:
+                    pass
+                try:
+                    schedule_save(e)
+                except Exception:
+                    pass
+                try:
+                    if getattr(self, 'token_counter', None):
+                        self._schedule_token_update()
+                except Exception:
+                    pass
+
+            text.bind('<<Modified>>', _on_text_modified)
 
             # close handler
             def on_close():
@@ -2016,9 +2092,24 @@ class MaskingTool(ctk.CTkToplevel):
                 text.focus_set()
             except Exception:
                 pass
+            # Ensure widget-specific bindings run before class/global bindings
+            try:
+                tags = list(text.bindtags())
+                # Move widget's own tag to the front if not already
+                if tags and tags[0] != str(text):
+                    if str(text) in tags:
+                        tags.remove(str(text))
+                    tags.insert(0, str(text))
+                    text.bindtags(tuple(tags))
+            except Exception:
+                pass
             # bind Ctrl+Up/Down for image navigation
             text.bind('<Control-Up>', lambda e: self._select_prev_image())
             text.bind('<Control-Down>', lambda e: self._select_next_image())
+            # Удалены временные бинды для логирования виртуальных событий
+
+            # As a fallback, bind clipboard shortcuts on the Info window itself to ensure they are handled
+            # Удалены временные бинды и обработчики для логирования на уровне окна
             # block drawing hotkeys by ensuring focus is in text (existing _on_key_press checks focus_get)
         except Exception:
             pass
@@ -2047,14 +2138,53 @@ class MaskingTool(ctk.CTkToplevel):
         self._token_after_id = self.after(300, self._update_token_count)  # 300ms debounce
 
     def _update_token_count(self):
-        logger.info("Updating token count...")
         if not self.token_counter or not hasattr(self, '_info_text'):
-            logger.info("Token counter or text not available.")
             return
         text = self._info_text.get("1.0", "end-1c")
         tokens = self.token_counter.count_tokens(text)
-        logger.info(f"Debug: Text length {len(text)}, tokens: {tokens}")
-        self.token_label.config(text=f"Tokens: {tokens}")
+        # Update numeric label
+        try:
+            self.token_count_label.config(text=str(tokens))
+        except Exception:
+            pass
+
+        # Determine color and tooltip based on thresholds
+        try:
+            if tokens <= 55:
+                color = "#198754"  # green
+                tip = "Optimal"
+            elif tokens <= 77:
+                color = "#fd7e14"  # orange
+                tip = "May be truncated!"
+            else:
+                color = "#dc3545"  # red
+                tip = "Will be truncated!!!"
+
+            # Update label foreground; use a contrasting background if needed
+            try:
+                self.token_count_label.configure(fg=color)
+            except Exception:
+                try:
+                    self.token_count_label.configure(foreground=color)
+                except Exception:
+                    pass
+
+            # Update tooltip: recreate or update text
+            try:
+                if self._token_tooltip is None:
+                    self._token_tooltip = ToolTip(self.token_count_label, tip)
+                else:
+                    # Replace tooltip text by recreating the tooltip object
+                    # (ToolTip implementation stores text on init)
+                    try:
+                        self._token_tooltip.hide_tooltip(None)
+                    except Exception:
+                        pass
+                    self._token_tooltip = ToolTip(self.token_count_label, tip)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _translate_selected_text(self):
         try:
@@ -2097,6 +2227,11 @@ class MaskingTool(ctk.CTkToplevel):
 
     def _do_insert(self, new_text):
         self._info_text.insert(self.current_insert_pos, new_text)
+        try:
+            if getattr(self, 'token_counter', None):
+                self._schedule_token_update()
+        except Exception:
+            pass
         self.current_insert_pos = self._info_text.index(self.current_insert_pos + f"+{len(new_text)}c")
         self._info_text.see("end")
 
@@ -2108,8 +2243,10 @@ class MaskingTool(ctk.CTkToplevel):
                 if idx >= 0:
                     self.originals_list.selection_clear(0, 'end')
                     self.originals_list.selection_set(idx)
+                    self.originals_list.activate(idx)
                     self.originals_list.see(idx)
                     self._on_list_select()
+                    self.originals_list.focus_set()
         except Exception:
             pass
 
@@ -2121,8 +2258,10 @@ class MaskingTool(ctk.CTkToplevel):
                 if idx < len(self.originals):
                     self.originals_list.selection_clear(0, 'end')
                     self.originals_list.selection_set(idx)
+                    self.originals_list.activate(idx)
                     self.originals_list.see(idx)
                     self._on_list_select()
+                    self.originals_list.focus_set()
         except Exception:
             pass
 
@@ -3304,6 +3443,23 @@ class MaskingTool(ctk.CTkToplevel):
         # If Info tool is active, block drawing hotkeys (editing happens in separate window)
         if getattr(self, 'active_tool', None) == 'info':
             return
+        # Allow clipboard shortcuts to pass through (don't intercept)
+        try:
+            ks = getattr(event, 'keysym', '').lower()
+            char = getattr(event, 'char', '')
+            state = getattr(event, 'state', 0)
+            ctrl = (state & 0x4) != 0
+            # handle Command on macOS (Mod2/Mod4 variations not always consistent); include simple keysym checks
+            if ctrl and (ks in ('c', 'v', 'x') or (getattr(event, 'char', '') and ord(event.char) in (3,22,24))):
+                try:
+                    logger.info(f"GlobalKey: detected Ctrl+{ks}, allowing pass (focus={self.focus_get()})")
+                except Exception:
+                    pass
+                return
+            if ks in ('insert',) and ((state & 0x1) != 0 or (state & 0x4) != 0):  # Shift-Insert or Ctrl-Insert
+                return
+        except Exception:
+            pass
         # ignore hotkeys if focus is on a text input widget
         focused = self.focus_get()
         if focused and isinstance(focused, (tk.Entry, tk.Text, ctk.CTkEntry)):
