@@ -319,6 +319,11 @@ class MaskingTool(ctk.CTkToplevel):
             self.folder_entry = components.entry(controls, 0, 1, ui_state, "__masking_tool_folder__")
         else:
             # standalone mode: show a clickable link label instead of an editable entry
+            # Note: If the masking tool is opened from within the main TrainUI, the
+            # expected '__masking_tool_folder__' variable may not be present in the
+            # shared UIState (this is optional). The components.entry implementation
+            # will gracefully fall back to a local StringVar in that case, and we
+            # still provide a simple clickable link for the standalone UI.
             # this avoids relying on external ui_state and gives a simple, robust UX
             self.folder_entry = None
             try:

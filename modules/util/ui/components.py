@@ -1,4 +1,6 @@
 import contextlib
+import logging
+import tkinter as tk
 from collections.abc import Callable
 from tkinter import filedialog
 from typing import Any
@@ -50,10 +52,22 @@ def entry(
         width: int = 140,
         sticky: str = "new",
 ):
-    var = ui_state.get_var(var_name)
+    # Try to obtain the variable from shared UIState. If it doesn't exist
+    # (for example when the tool is launched standalone or the key isn't
+    # present in the global config), fall back to a local StringVar so the
+    # UI remains functional and no KeyError is raised.
     trace_id = None
-    if command:
-        trace_id = ui_state.add_var_trace(var_name, command)
+    try:
+        var = ui_state.get_var(var_name)
+        if command:
+            trace_id = ui_state.add_var_trace(var_name, command)
+        using_shared_var = True
+    except Exception:
+        logging.getLogger(__name__).warning("UIState missing variable '%s'; using local fallback StringVar", var_name)
+        # Missing key in UIState or other error: create a local var
+        var = tk.StringVar(master=master)
+        var.set("")
+        using_shared_var = False
 
     component = ctk.CTkEntry(master, textvariable=var, width=width)
     component.grid(row=row, column=column, padx=PAD, pady=PAD, sticky=sticky)
@@ -186,8 +200,13 @@ def entry(
 
         var.trace_remove("write", validation_trace_name)
 
-        if command is not None and trace_id is not None:
-            ui_state.remove_var_trace(var_name, trace_id)
+        # remove shared trace only if we registered one
+        if command is not None and trace_id is not None and using_shared_var:
+            try:
+                ui_state.remove_var_trace(var_name, trace_id)
+            except Exception:
+                # best-effort cleanup; ignore failures
+                pass
 
         original_destroy()
 

@@ -588,23 +588,23 @@ class TrainUI(ctk.CTk):
         components.button(frame, 1, 1, "Open", self.open_dataset_tool)
 
         # video tools
-        components.label(frame, 1, 0, "Video Tools",
+        components.label(frame, 2, 0, "Video Tools",
                          tooltip="Open the video tools")
-        components.button(frame, 1, 1, "Open", self.open_video_tool)
+        components.button(frame, 2, 1, "Open", self.open_video_tool)
 
         # convert model
-        components.label(frame, 2, 0, "Convert Model Tools",
+        components.label(frame, 3, 0, "Convert Model Tools",
                          tooltip="Open the model conversion tool")
-        components.button(frame, 2, 1, "Open", self.open_convert_model_tool)
+        components.button(frame, 3, 1, "Open", self.open_convert_model_tool)
 
         # sample
-        components.label(frame, 3, 0, "Sampling Tool",
+        components.label(frame, 4, 0, "Sampling Tool",
                          tooltip="Open the model sampling tool")
-        components.button(frame, 3, 1, "Open", self.open_sampling_tool)
+        components.button(frame, 4, 1, "Open", self.open_sampling_tool)
 
-        components.label(frame, 4, 0, "Profiling Tool",
+        components.label(frame, 5, 0, "Profiling Tool",
                          tooltip="Open the profiling tools.")
-        components.button(frame, 4, 1, "Open", self.open_profiling_tool)
+        components.button(frame, 5, 1, "Open", self.open_profiling_tool)
 
         frame.pack(fill="both", expand=1)
         return frame
