@@ -1,2 +1,3 @@
 langdetect==1.0.9
 hf_xet
+ffmpeg-python

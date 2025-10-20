@@ -150,6 +150,10 @@ class MaskingTool(ctk.CTkToplevel):
         # enable debug printing for spline flows (temporary; can be disabled)
         # disabled by default
         self._spline_debug: bool = False
+        # ссылка на окно Video Parser (если создано из модуля)
+        self._video_parser_window = None
+        # флаг открытого состояния Video Parser (для восстановления при рестарте)
+        self._video_parser_window_open = False
         self._build_ui()
 
         # bind hotkeys
@@ -217,24 +221,45 @@ class MaskingTool(ctk.CTkToplevel):
         editor_frame.grid_rowconfigure(0, weight=1)
         editor_frame.grid_columnconfigure(0, weight=1)
 
-        # header for editor: label + mask mini-preview on the right
+        # header for editor: split into two halves
         header = ctk.CTkFrame(editor_frame, fg_color="transparent")
         header.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
+        # left column expands (so right group stays anchored to the right)
         header.grid_columnconfigure(0, weight=1)
-        # label without extra padding so preview can occupy full header height
+        header.grid_columnconfigure(1, weight=0)
+
+        # Left side: Video button (placeholder)
+        left_header = ctk.CTkFrame(header, fg_color="transparent")
+        left_header.grid(row=0, column=0, sticky="w", padx=(6, 0), pady=0)
+
+        # Right side: preview + style buttons, aligned to the right
+        right_header = ctk.CTkFrame(header, fg_color="transparent")
+        right_header.grid(row=0, column=1, sticky="e", padx=(0, 6), pady=0)
+        right_header.grid_columnconfigure(0, weight=1)
+        right_header.grid_columnconfigure(1, weight=0)
+
+        # Используем video.png из resources/icons, как иконки в других частях UI
+        from PIL import Image
+        from customtkinter import CTkImage
+        # Подложка: чуть темнее, не чёрная, без лишних паддингов, строго 40x40
+        video_img = Image.open("resources/icons/video.png").resize((40, 40), Image.Resampling.LANCZOS)
+        # Цвет: #232323, альфа 180 (чуть темнее, без скруглений)
+        bg = Image.new("RGBA", (40, 40), (80, 80, 80, 80))
+        bg.paste(video_img, (0, 0), video_img)
+        self._video_icon_ref = CTkImage(bg, size=(40, 40))
+        self.video_btn = ctk.CTkLabel(left_header, text="", image=self._video_icon_ref, width=40, height=40, cursor="hand2")
+        self.video_btn.grid(row=0, column=0, padx=0, pady=0, sticky="w")
+        # Связываем клик с методом открытия окна (реюз/подъём)
+        self.video_btn.bind('<Button-1>', lambda e: self._open_video_parser_window())
+
+        # preview is a label (no padding) so it can be sized exactly; place inside right_header
+        self.mask_preview_btn = ctk.CTkLabel(right_header, text="", image=None)
+        self.mask_preview_btn.grid(row=0, column=0, padx=0, pady=0, sticky="e")
+
+        # style selector frame (three small buttons) placed to the right inside right_header
         try:
-            title_label = ctk.CTkLabel(header, text="Editor")
-            title_label.grid(row=0, column=0, padx=0, pady=0, sticky="nw")
-        except Exception:
-            components.label(header, 0, 0, "Editor")
-        # preview is a label (no padding) so it can be sized exactly
-        self.mask_preview_btn = ctk.CTkLabel(header, text="", image=None)
-        self.mask_preview_btn.grid(row=0, column=1, padx=0, pady=0, sticky="nsew")
-        # style selector frame (three small buttons) placed to the right
-        try:
-            header.grid_columnconfigure(2, weight=0)
-            style_frame = ctk.CTkFrame(header, fg_color="transparent")
-            style_frame.grid(row=0, column=2, padx=0, pady=0, sticky='nsew')
+            style_frame = ctk.CTkFrame(right_header, fg_color="transparent")
+            style_frame.grid(row=0, column=1, padx=(6, 0), pady=0, sticky='e')
             # create three label-buttons for styles; images are generated on header resize
             for i in range(3):
                 lbl = ctk.CTkLabel(style_frame, text="", image=None, fg_color='transparent', cursor='hand2')
@@ -363,6 +388,70 @@ class MaskingTool(ctk.CTkToplevel):
             self.protocol('WM_DELETE_WINDOW', self._on_close)
         except Exception:
             pass
+
+    def _open_video_parser_window(self):
+        """Открыть/поднять окно Video Parser. Устанавливает флаг открытости для восстановления и сохраняет настройки."""
+        try:
+            from modules.module.VideoParser import VideoParserWindow
+            existing = getattr(self, '_video_parser_window', None)
+            if existing and getattr(existing, 'winfo_exists', lambda: False)():
+                try:
+                    existing.transient(self)
+                    existing.lift()
+                except Exception:
+                    pass
+                try:
+                    existing.focus()
+                except Exception:
+                    pass
+                try:
+                    self._video_parser_window_open = True
+                    self._schedule_save_settings()
+                    self._save_window_settings_atomic()
+                except Exception:
+                    pass
+                return existing
+
+            win = VideoParserWindow(master=self, keep_on_top=True)
+            self._video_parser_window = win
+            try:
+                self._video_parser_window_open = True
+                self._schedule_save_settings()
+                self._save_window_settings_atomic()
+            except Exception:
+                pass
+
+            def _on_vclose():
+                try:
+                    self._video_parser_window_open = False
+                except Exception:
+                    pass
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+                try:
+                    self._schedule_save_settings()
+                    self._save_window_settings_atomic()
+                except Exception:
+                    pass
+
+            try:
+                win.protocol('WM_DELETE_WINDOW', _on_vclose)
+            except Exception:
+                pass
+            try:
+                win.focus()
+            except Exception:
+                pass
+            return win
+        except Exception as ex:
+            try:
+                import tkinter.messagebox as mb
+                mb.showerror("Video Parser", f"Ошибка открытия окна Video Parser: {ex}")
+            except Exception:
+                pass
+            return None
 
     # --- folder link helpers ---
     def _set_folder_text(self, path: str | None):
@@ -644,6 +733,18 @@ class MaskingTool(ctk.CTkToplevel):
                             pass
                 except Exception:
                     pass
+            # Restore video parser open state
+            try:
+                meta = data.get('meta') or {}
+                vopen = meta.get('video_parser_open', False)
+                if vopen:
+                    try:
+                        # open after small delay to allow UI initialisation
+                        self.after(200, lambda: self._open_video_parser_window())
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -749,12 +850,15 @@ class MaskingTool(ctk.CTkToplevel):
                     if hasattr(self, 'force_cpu_var'):
                         info_geom['force_cpu'] = self.force_cpu_var.get()
                     meta_block['info_geometry'] = info_geom
+                    # сохраняем состояние открытости Video Parser
+                    try:
+                        meta_block['video_parser_open'] = bool(getattr(self, '_video_parser_window_open', False))
+                    except Exception:
+                        pass
                 except Exception:
                     pass
-                if meta_block:
-                    final_save = {'geometry': geometry_dict, 'meta': meta_block}
-                else:
-                    final_save = {'geometry': geometry_dict}
+                # Always include meta block so flags like video_parser_open are preserved
+                final_save = {'geometry': geometry_dict, 'meta': meta_block}
             except Exception:
                 # fallback
                 final_save = {'geometry': geometry_dict}
@@ -765,6 +869,27 @@ class MaskingTool(ctk.CTkToplevel):
                 p.parent.mkdir(parents=True, exist_ok=True)
             except Exception:
                 pass
+
+            # merge with existing file contents to preserve unrelated keys (e.g., video_parser_geometry)
+            try:
+                existing = {}
+                if p.exists():
+                    try:
+                        existing = json.loads(p.read_text(encoding='utf-8')) or {}
+                    except Exception:
+                        existing = {}
+                # merge meta dictionaries
+                try:
+                    existing_meta = existing.get('meta', {}) or {}
+                    existing_meta.update(meta_block)
+                    existing['meta'] = existing_meta
+                except Exception:
+                    existing['meta'] = meta_block
+                existing['geometry'] = geometry_dict
+                final_save = existing
+            except Exception:
+                # fallback to simple structure
+                final_save = {'geometry': geometry_dict, 'meta': meta_block}
 
             # write to temp file then atomically replace
             try:
@@ -4669,6 +4794,42 @@ if __name__ == '__main__':
             child = None
 
         # initial snapshot
+        files = gather_py_files(repo_root)
+        last_snap = snapshot(files)
+
+        start_child()
+
+        try:
+            while True:
+                time.sleep(1.0)
+                files = gather_py_files(repo_root)
+                new_snap = snapshot(files)
+                # detect added/removed/changed
+                changed = False
+                if set(new_snap.keys()) != set(last_snap.keys()):
+                    changed = True
+                else:
+                    for k, v in new_snap.items():
+                        if last_snap.get(k) != v:
+                            changed = True
+                            break
+
+                if changed:
+                    print("Change detected in .py files, restarting child...")
+                    stop_child()
+                    start_child()
+                    last_snap = new_snap
+
+                # reap child if it exited unexpectedly
+                if child is not None:
+                    ret = child.poll()
+                    if ret is not None:
+                        print(f"Child exited with code {ret}, restarting...")
+                        start_child()
+
+        except KeyboardInterrupt:
+            print("Supervisor exiting on KeyboardInterrupt, stopping child...")
+            stop_child()
         files = gather_py_files(repo_root)
         last_snap = snapshot(files)
 
