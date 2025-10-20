@@ -1,0 +1,24 @@
+{
+    "terminal.integrated.defaultProfile.windows": "PowerShell",
+        "terminal.integrated.profiles.windows": {
+        "PowerShell": {
+            "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-NoExit",
+                "-Command",
+                "& '${workspaceFolder}\\venv\\Scripts\\Activate.ps1'"
+            ]
+        }
+    },
+    "terminal.integrated.env.windows": {
+        "HF_HOME": "${workspaceFolder}\\.cache\\huggingface",
+        "DIFFUSERS_CACHE": "${workspaceFolder}\\.cache\\diffusers",
+        "TORCH_HOME": "${workspaceFolder}\\.cache\\torch",
+        "XDG_CACHE_HOME": "${workspaceFolder}\\.cache",
+        "PIP_CACHE_DIR": "${workspaceFolder}\\.cache\\pip"
+    }
+}
