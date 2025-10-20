@@ -105,10 +105,8 @@ def _safe_imread(path, flags=None, _retries=3, _backoff=0.05):
         return None
 
 
-try:
-    import imageio_ffmpeg as imageio_ffmpeg
-except Exception:
-    imageio_ffmpeg = None
+# imageio_ffmpeg is imported locally where needed to avoid hard dependency
+imageio_ffmpeg = None
 
 # Determine portable resampling constants to avoid static-analysis issues
 try:
@@ -695,14 +693,52 @@ class VideoParserWindow(ctk.CTkToplevel):
         except Exception:
             pass
 
-        self.dedup_var = ctk.BooleanVar(value=self._load_setting("video_dedup", False))
+        # Normalize stored setting to a real boolean in case the JSON contains
+        # string values like "false" or "0" (user-edited file). Treat
+        # common falsy strings as False.
+        try:
+            raw_dedup = self._load_setting("video_dedup", False)
+        except Exception:
+            raw_dedup = False
+        try:
+            if isinstance(raw_dedup, bool):
+                dedup_init = raw_dedup
+            else:
+                s = str(raw_dedup).strip().lower()
+                dedup_init = False if s in ("", "0", "false", "none", "no", "off") else True
+        except Exception:
+            dedup_init = False
+        self.dedup_var = ctk.BooleanVar(value=dedup_init)
+        # Auto-dedup checkbox: controls whether deduplication runs automatically after extraction
+        try:
+            self.dedup_chk = ctk.CTkCheckBox(
+                controls_frame,
+                text="Auto dedup",
+                variable=self.dedup_var,
+                command=self._on_dedup_toggle,
+            )
+            self.dedup_chk.grid(row=0, column=3, padx=(0, 8))
+        except Exception:
+            try:
+                self.dedup_chk = tk.Checkbutton(
+                    controls_frame,
+                    text="Auto dedup",
+                    variable=self.dedup_var,
+                    command=self._on_dedup_toggle,
+                )
+                self.dedup_chk.grid(row=0, column=3, padx=(0, 8))
+            except Exception:
+                self.dedup_chk = None
+
+        # Dedup button will either start manual dedup or act as Stop while dedup is running
         self.dedup_btn = ctk.CTkButton(
             controls_frame,
             text="Deduplication",
             width=100,
-            command=self._run_deduplication_only,
+            command=lambda: self._on_dedup_button_click(),
         )
-        self.dedup_btn.grid(row=0, column=3, padx=(0, 8))
+        # place button after the auto-dedup checkbox
+        self.dedup_btn.grid(row=0, column=4, padx=(0, 8))
         # --- Dedup threshold ---
         threshold_default = 12
         threshold_cfg = self._load_setting("video_dedup_threshold", None)
@@ -750,12 +786,12 @@ class VideoParserWindow(ctk.CTkToplevel):
             width=10,
             command=show_dedup_threshold_dialog,
         )
-        help_btn.grid(row=0, column=5, padx=(0, 8))
+        help_btn.grid(row=0, column=6, padx=(0, 8))
 
         self.dedup_threshold_entry = ctk.CTkEntry(
             controls_frame, width=60, textvariable=self.dedup_threshold_var
         )
-        self.dedup_threshold_entry.grid(row=0, column=4, padx=(0, 8))
+        self.dedup_threshold_entry.grid(row=0, column=5, padx=(0, 8))
         try:
             self.dedup_threshold_entry.configure(placeholder_text="Agg (0-32)")
         except Exception:
@@ -820,7 +856,7 @@ class VideoParserWindow(ctk.CTkToplevel):
             text_color="white",
             command=on_clear_dataset,
         )
-        clear_btn.grid(row=0, column=6, padx=(0, 8))
+        clear_btn.grid(row=0, column=7, padx=(0, 8))
         try:
             # Tooltip on hover for clarity
             tooltip_win: list[Any] = [None]
@@ -864,7 +900,7 @@ class VideoParserWindow(ctk.CTkToplevel):
         self.run_btn = ctk.CTkButton(
             controls_frame, text="Run", width=80, command=self._on_run
         )
-        self.run_btn.grid(row=0, column=7, padx=(0, 8))
+        self.run_btn.grid(row=0, column=8, padx=(0, 8))
 
         # Bottom part: horizontal split (bottom panel)
         bottom_panel = ctk.CTkFrame(
@@ -930,6 +966,14 @@ class VideoParserWindow(ctk.CTkToplevel):
         self._files_order: list[str] = []
         self._selected_name: str | None = None
         self._last_index: int = 0
+
+        # Cancellation event for deduplication (shared between manual and auto runs)
+        try:
+            import threading as _th
+
+            self._dedup_cancel_event = _th.Event()
+        except Exception:
+            self._dedup_cancel_event = None
 
         # Preview (right)
         preview_frame = ctk.CTkFrame(
@@ -1110,6 +1154,44 @@ class VideoParserWindow(ctk.CTkToplevel):
         except Exception:
             pass
 
+    def _set_dedup_button_text(self, text: str):
+        try:
+            if self.dedup_btn is not None:
+                try:
+                    self.dedup_btn.configure(text=text)
+                except Exception:
+                    try:
+                        self.dedup_btn.config(text=text)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _on_dedup_button_click(self):
+        """Toggle manual deduplication or cancel running dedup."""
+        try:
+            # If dedup is currently running, signal cancellation
+            running = getattr(self, "_processing_state", None) == "dedup"
+            if running and getattr(self, "_dedup_cancel_event", None) is not None:
+                try:
+                    self._dedup_cancel_event.set()
+                    self._set_dedup_button_text("Stopping...")
+                except Exception:
+                    pass
+                return
+            # Otherwise start manual dedup
+            try:
+                self._set_dedup_button_text("Stop dedup")
+            except Exception:
+                pass
+            # start manual dedup worker (same function as before)
+            try:
+                self._run_deduplication_only()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def _on_send_to_masking_tool(self):
         """Передать текущий датасет в MaskingTool и закрыть окно (только если запущено из MaskingTool)."""
         try:
@@ -1123,8 +1205,12 @@ class VideoParserWindow(ctk.CTkToplevel):
                 return
             # Установить директорию датасета в MaskingTool
             try:
-                if hasattr(parent, "_set_folder_text"):
-                    parent._set_folder_text(str(out_dir))
+                fn = getattr(parent, "_set_folder_text", None)
+                if callable(fn):
+                    try:
+                        fn(str(out_dir))
+                    except Exception:
+                        pass
             except Exception:
                 pass
             try:
@@ -1135,10 +1221,12 @@ class VideoParserWindow(ctk.CTkToplevel):
             try:
                 import threading as _th
 
-                if hasattr(parent, "_scan_directory"):
-                    _th.Thread(
-                        target=parent._scan_directory, args=(str(out_dir),), daemon=True
-                    ).start()
+                scan_fn = getattr(parent, "_scan_directory", None)
+                if callable(scan_fn):
+                    try:
+                        _th.Thread(target=scan_fn, args=(str(out_dir),), daemon=True).start()
+                    except Exception:
+                        pass
             except Exception:
                 pass
             # Закрыть окно видеопарсера
@@ -1242,15 +1330,12 @@ class VideoParserWindow(ctk.CTkToplevel):
             # create a copy and thumbnail to maintain aspect ratio
             try:
                 img_copy = img.copy()
-                # Pillow versions differ: prefer Resampling enum if present
-                resampling = getattr(Image, "Resampling", None)
-                if resampling is not None:
-                    resample_val = Image.Resampling.LANCZOS
-                elif hasattr(Image, "LANCZOS"):
-                    resample_val = Image.LANCZOS
+                # Use precomputed portable resampling constants (may be None)
+                resample_val = LANCZOS_CONST if LANCZOS_CONST is not None else BICUBIC_CONST
+                if resample_val is not None:
+                    img_copy.thumbnail((w, h), resample_val)
                 else:
-                    resample_val = Image.BICUBIC
-                img_copy.thumbnail((w, h), resample_val)
+                    img_copy.thumbnail((w, h))
             except Exception:
                 img_copy = img
 
@@ -1957,7 +2042,7 @@ class VideoParserWindow(ctk.CTkToplevel):
 
         import threading
 
-        def worker(out_dir: Path, every_n_local: int, dedup_threshold: int):
+        def worker(out_dir: Path, every_n_local: int, dedup_threshold: int, dedup_enabled: bool):
             # Background worker: run ffmpeg, parse -progress output, then optionally deduplicate
             try:
                 try:
@@ -2091,15 +2176,29 @@ class VideoParserWindow(ctk.CTkToplevel):
                 except Exception:
                     created_count = 0
 
-                # Deduplication (always run after extraction)
-                try:
-                    self._processing_state = "dedup"
-                    self.after(
-                        0, lambda: self._set_status("Deduplication in progress...")
-                    )
-                except Exception:
-                    pass
-                logger.info("Starting deduplication...")
+                # Deduplication: run only if dedup_enabled flag is True
+                if dedup_enabled:
+                    try:
+                        # prepare cancel event and UI state
+                        if getattr(self, "_dedup_cancel_event", None) is not None:
+                            try:
+                                self._dedup_cancel_event.clear()
+                            except Exception:
+                                pass
+                        # show Stop label so user can cancel
+                        try:
+                            self.after(0, lambda: self._set_dedup_button_text("Stop dedup"))
+                        except Exception:
+                            pass
+                        self._processing_state = "dedup"
+                        self.after(
+                            0, lambda: self._set_status("Deduplication in progress...")
+                        )
+                    except Exception:
+                        pass
+                    logger.info("Starting deduplication...")
+                else:
+                    logger.info("Skipping deduplication (disabled by user setting)")
 
                 def dhash(image, hash_size=8):
                     if cv2 is None:
@@ -2152,44 +2251,52 @@ class VideoParserWindow(ctk.CTkToplevel):
                 except Exception:
                     pass
 
-                DEDUP_THRESHOLD = max(0, min(32, int(dedup_threshold)))
-                for f_local in out_files_local:
-                    img_local = _safe_imread(
-                        f_local, cv2.IMREAD_UNCHANGED if cv2 is not None else None
-                    )
-                    if img_local is None:
-                        continue
-                    h_local = dhash(img_local)
-                    dup_local = False
-                    for oh, ofp in hashes_local:
-                        if hamming(h_local, oh) <= DEDUP_THRESHOLD:
-                            logger.debug(
-                                f"Removing duplicate {f_local} similar to {ofp}"
-                            )
-                            try:
-                                f_local.unlink()
-                                removed_local += 1
-                            except Exception:
-                                pass
-                            dup_local = True
-                            try:
-                                # refresh navigator immediately without debounce
-                                self.after(0, lambda: self._schedule_nav_update())
-                            except Exception:
-                                pass
-                            try:
-                                remaining = max(0, total_out_files - removed_local)
-                                self.after(
-                                    0,
-                                    lambda r=remaining: self._set_status(
-                                        f"Deduplication in progress: remaining {r} files."
-                                    ),
+                if dedup_enabled:
+                    DEDUP_THRESHOLD = max(0, min(32, int(dedup_threshold)))
+                    for f_local in out_files_local:
+                        # cancellation check
+                        try:
+                            if getattr(self, "_dedup_cancel_event", None) is not None and self._dedup_cancel_event.is_set():
+                                logger.info("Deduplication cancelled by user (auto)")
+                                break
+                        except Exception:
+                            pass
+                        img_local = _safe_imread(
+                            f_local, cv2.IMREAD_UNCHANGED if cv2 is not None else None
+                        )
+                        if img_local is None:
+                            continue
+                        h_local = dhash(img_local)
+                        dup_local = False
+                        for oh, ofp in hashes_local:
+                            if hamming(h_local, oh) <= DEDUP_THRESHOLD:
+                                logger.debug(
+                                    f"Removing duplicate {f_local} similar to {ofp}"
                                 )
-                            except Exception:
-                                pass
-                            break
-                    if not dup_local:
-                        hashes_local.append((h_local, f_local))
+                                try:
+                                    f_local.unlink()
+                                    removed_local += 1
+                                except Exception:
+                                    pass
+                                dup_local = True
+                                try:
+                                    # refresh navigator immediately without debounce
+                                    self.after(0, lambda: self._schedule_nav_update())
+                                except Exception:
+                                    pass
+                                try:
+                                    remaining = max(0, total_out_files - removed_local)
+                                    self.after(
+                                        0,
+                                        lambda r=remaining: self._set_status(
+                                            f"Deduplication in progress: remaining {r} files."
+                                        ),
+                                    )
+                                except Exception:
+                                    pass
+                                break
+                        if not dup_local:
+                            hashes_local.append((h_local, f_local))
                 logger.info(f"Deduplication completed, removed {removed_local} files")
                 try:
                     remaining = max(0, total_out_files - removed_local)
@@ -2199,6 +2306,21 @@ class VideoParserWindow(ctk.CTkToplevel):
                             f"Deduplication completed: {remd} removed, {rem} remaining."
                         ),
                     )
+                except Exception:
+                    pass
+
+                # cleanup cancel event & restore button if we ran dedup
+                try:
+                    if dedup_enabled and getattr(self, "_dedup_cancel_event", None) is not None:
+                        try:
+                            self._dedup_cancel_event.clear()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    if dedup_enabled:
+                        self.after(0, lambda: self._set_dedup_button_text("Deduplication"))
                 except Exception:
                     pass
 
@@ -2238,8 +2360,24 @@ class VideoParserWindow(ctk.CTkToplevel):
             dedup_threshold = int(self.dedup_threshold_var.get())
         except Exception:
             dedup_threshold = 12
+        # Read current auto-dedup setting and pass to worker
+        try:
+            raw_val = self.dedup_var.get()
+        except Exception:
+            raw_val = False
+        try:
+            if isinstance(raw_val, bool):
+                dedup_enabled = raw_val
+            else:
+                s = str(raw_val).strip().lower()
+                dedup_enabled = False if s in ("", "0", "false", "none", "no", "off") else True
+        except Exception:
+            dedup_enabled = False
+
         thread = threading.Thread(
-            target=worker, args=(output_dir, every_n, dedup_threshold), daemon=True
+            target=worker,
+            args=(output_dir, every_n, dedup_threshold, dedup_enabled),
+            daemon=True,
         )
         thread.start()
 
@@ -2322,6 +2460,13 @@ class VideoParserWindow(ctk.CTkToplevel):
 
                 DEDUP_THRESHOLD = max(0, min(32, dedup_threshold))
                 for f_local in out_files_local:
+                    # check for user cancellation
+                    try:
+                        if getattr(self, "_dedup_cancel_event", None) is not None and self._dedup_cancel_event.is_set():
+                            logger.info("Deduplication cancelled by user")
+                            break
+                    except Exception:
+                        pass
                     img_local = _safe_imread(
                         f_local, cv2.IMREAD_UNCHANGED if cv2 is not None else None
                     )
@@ -2383,8 +2528,22 @@ class VideoParserWindow(ctk.CTkToplevel):
                     pass
             finally:
                 try:
+                    # clear cancellation event so next run starts fresh
+                    if getattr(self, "_dedup_cancel_event", None) is not None:
+                        try:
+                            self._dedup_cancel_event.clear()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
                     self._processing_state = None
                     self.after(0, self._update_status)
+                except Exception:
+                    pass
+                try:
+                    # restore button label
+                    self.after(0, lambda: self._set_dedup_button_text("Deduplication"))
                 except Exception:
                     pass
 
@@ -3260,21 +3419,64 @@ class VideoParserWindow(ctk.CTkToplevel):
                         box = (x_px, y_px, x_px + size_px, y_px + size_px)
                         cropped = im.crop(box)
                         # Resize to target square
-                        resample = (
-                            LANCZOS_CONST
-                            or getattr(PILImage, "LANCZOS", None)
-                            or (getattr(PILImage, "BICUBIC", None))
-                        )
+                        # Use precomputed portable resampling constants if available
+                        resample = LANCZOS_CONST if LANCZOS_CONST is not None else BICUBIC_CONST
                         if resample is None:
                             resized = cropped.resize((tw, th))
                         else:
                             resized = cropped.resize((tw, th), resample)
                         # Save back
                         try:
-                            resized.save(str(img_path), format="JPEG", quality=92)
+                            # Try to preserve original format when saving.
+                            orig_format = getattr(im, 'format', None)
+                            orig_mode = getattr(im, 'mode', None)
+                            fmt = None
+                            if orig_format:
+                                fmt = str(orig_format).upper()
+                            else:
+                                # fallback to extension
+                                try:
+                                    fmt = img_path.suffix.replace('.', '').upper()
+                                except Exception:
+                                    fmt = None
+
+                            out_img = resized
+                            save_kwargs = {}
+                            if fmt in ('JPEG', 'JPG'):
+                                # JPEG requires RGB
+                                try:
+                                    out_img = resized.convert('RGB')
+                                except Exception:
+                                    out_img = resized
+                                save_kwargs = {'format': 'JPEG', 'quality': 92}
+                            elif fmt == 'PNG':
+                                # preserve alpha channel if original had it
+                                try:
+                                    if orig_mode and 'A' in orig_mode:
+                                        out_img = resized.convert('RGBA')
+                                    else:
+                                        out_img = resized.convert('RGB')
+                                except Exception:
+                                    out_img = resized
+                                save_kwargs = {'format': 'PNG'}
+                            else:
+                                # Unknown/other formats: try to save using detected format if present
+                                if fmt:
+                                    save_kwargs = {'format': fmt}
+                                else:
+                                    save_kwargs = {}
+
+                            try:
+                                out_img.save(str(img_path), **save_kwargs)
+                            except Exception:
+                                # fallback without extra params
+                                try:
+                                    resized.save(str(img_path))
+                                except Exception:
+                                    pass
                         except Exception:
-                            # fallback without params
-                            resized.save(str(img_path))
+                            # saving failed; skip updating file but continue
+                            pass
                         # Update sidecar meta and crop for this file
                         try:
                             st = img_path.stat()
