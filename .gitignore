@@ -39,3 +39,4 @@ debug_report.log
 config_diff.txt
 logs
 .cache/
+.hf_cache/
